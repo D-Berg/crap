@@ -1,11 +1,12 @@
 const std = @import("std");
+const manifest = @import("build.zig.zon");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
-        .name = "poop",
+        .name = @tagName(manifest.name),
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -13,6 +14,9 @@ pub fn build(b: *std.Build) void {
             .strip = b.option(bool, "strip", "strip the binary"),
         }),
     });
+
+    if (target.result.os.tag == .macos)
+        linkMacosFrameWorks(b, exe.root_module, target);
 
     b.installArtifact(exe);
 
@@ -34,12 +38,16 @@ pub fn build(b: *std.Build) void {
             .cpu_arch = .riscv64,
             .os_tag = .linux,
         },
+        .{
+            .cpu_arch = .aarch64,
+            .os_tag = .macos,
+        },
     };
     for (release_targets) |target_query| {
         const resolved_target = b.resolveTargetQuery(target_query);
         const t = resolved_target.result;
         const rel_exe = b.addExecutable(.{
-            .name = "poop",
+            .name = @tagName(manifest.name),
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/main.zig"),
                 .target = resolved_target,
@@ -47,6 +55,9 @@ pub fn build(b: *std.Build) void {
                 .strip = true,
             }),
         });
+
+        if (resolved_target.result.os.tag == .macos)
+            linkMacosFrameWorks(b, rel_exe.root_module, resolved_target);
 
         const install = b.addInstallArtifact(rel_exe, .{});
         install.dest_dir = .prefix;
@@ -56,4 +67,28 @@ pub fn build(b: *std.Build) void {
 
         release.dependOn(&install.step);
     }
+}
+
+fn linkMacosFrameWorks(b: *std.Build, module: *std.Build.Module, target: std.Build.ResolvedTarget) void {
+    const trans_c = b.addTranslateC(.{
+        .optimize = .ReleaseSafe,
+        .target = target,
+        .root_source_file = b.path("include/macos.h"),
+    });
+
+    const sdk_path = std.zig.system.darwin.getSdk(b.allocator, &target.result) orelse
+        @panic("Failed to find SDK!");
+
+    trans_c.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{
+        sdk_path,
+        "usr/include",
+    }) });
+
+    module.addSystemFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{
+        sdk_path,
+        "System/Library/PrivateFrameworks",
+    }) });
+    module.linkFramework("kperf", .{});
+    module.linkFramework("kperfdata", .{});
+    module.addImport("c", trans_c.createModule());
 }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const Spinner = struct {
     pub const frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
@@ -23,7 +24,7 @@ const Spinner = struct {
 const bar = "━";
 const half_bar_left = "╸";
 const half_bar_right = "╺";
-const TIOCGWINSZ: u32 = 0x5413; // https://docs.rs/libc/latest/libc/constant.TIOCGWINSZ.html
+const TIOCGWINSZ: u32 = std.posix.T.IOCGWINSZ; // https://docs.rs/libc/latest/libc/constant.TIOCGWINSZ.html
 const WIDTH_PADDING: usize = 100;
 
 const Winsize = extern struct {
@@ -35,7 +36,11 @@ const Winsize = extern struct {
 
 pub fn getScreenWidth(stdout: std.posix.fd_t) usize {
     var winsize: Winsize = undefined;
-    _ = std.os.linux.ioctl(stdout, TIOCGWINSZ, @intFromPtr(&winsize));
+    switch (comptime builtin.os.tag) {
+        .linux => _ = std.os.linux.ioctl(stdout, TIOCGWINSZ, @intFromPtr(&winsize)),
+        .macos => _ = std.c.ioctl(stdout, TIOCGWINSZ, &winsize),
+        else => unreachable,
+    }
     return @intCast(winsize.ws_col);
 }
 
