@@ -4,7 +4,7 @@ Stop flushing your performance down the drain.
 
 ## Overview
 
-This command line tool uses Linux's `perf_event_open` and MacOS `kperf` functionality to compare the performance of multiple commands
+This command line tool uses Linux's `perf_event_open` and macOS `kperf` functionality to compare the performance of multiple commands
 with a colorful terminal user interface.
 
 ![image](https://github.com/andrewrk/poop/assets/106511/6fc9d22b-f95b-46ce-8dc5-d5cecc77c226)
