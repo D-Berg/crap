@@ -37,6 +37,8 @@ const usage_text =
     \\ -d, --duration <ms>    (default: 5000) how long to repeatedly sample each command
     \\ --color <when>         (default: auto) color output mode
     \\                            available options: 'auto', 'never', 'ansi'
+    \\ -s, --shell <shell>    (default: none) specify which shell to run commands in
+    \\ -w, --warmup <count>   (default: 0) specify number of warmups before running each command
     \\ -f, --allow-failures   (default: false) compare performance if a non-zero exit code is returned
     \\
 ++ extra_usage;
@@ -114,15 +116,13 @@ pub fn main() !void {
     var max_nano_seconds: u64 = std.time.ns_per_s * 5;
     var color: ColorMode = .auto;
     var allow_failures = false;
+    var shell: ?[]const u8 = null;
+    var warmup_count: u32 = 0;
 
     var arg_i: usize = 1;
     while (arg_i < args.len) : (arg_i += 1) {
         const arg = args[arg_i];
-        if (std.mem.eql(u8, arg, "version")) {
-            try stdout_w.print("{s}\n", .{build_options.version});
-            try stdout_w.flush();
-            return std.process.cleanExit();
-        } else if (!std.mem.startsWith(u8, arg, "-")) {
+        if (!std.mem.startsWith(u8, arg, "-")) {
             var cmd_argv: std.ArrayList([]const u8) = .empty;
             try parseCmd(arena, &cmd_argv, arg);
             try commands.append(arena, .{
@@ -169,6 +169,26 @@ pub fn main() !void {
             }
         } else if (std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--allow-failures")) {
             allow_failures = true;
+        } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--version")) {
+            try stdout_w.print("{s}\n", .{build_options.version});
+            try stdout_w.flush();
+            return std.process.cleanExit();
+        } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--shell")) {
+            arg_i += 1;
+            if (arg_i >= args.len) {
+                // TODO: add error message to user
+                std.process.exit(1);
+            }
+            const next = args[arg_i];
+            shell = next;
+        } else if (std.mem.eql(u8, arg, "-w") or std.mem.eql(u8, arg, "--warmup")) {
+            arg_i += 1;
+            if (arg_i >= args.len) {
+                // TODO: add error message to user
+                std.process.exit(1);
+            }
+            const next = args[arg_i];
+            warmup_count = try std.fmt.parseInt(@TypeOf(warmup_count), next, 10);
         } else {
             std.debug.print("unrecognized argument: '{s}'\n{s}", .{ arg, usage_text });
             std.process.exit(1);
@@ -179,6 +199,17 @@ pub fn main() !void {
         try stdout_w.writeAll(usage_text);
         try stdout_w.flush(); // 💩
         std.process.exit(1);
+    }
+
+    if (shell) |sh| {
+        for (commands.items) |*command| {
+            var argv: std.ArrayList([]const u8) = .empty;
+            try argv.ensureUnusedCapacity(arena, 3);
+            argv.appendAssumeCapacity(sh);
+            argv.appendAssumeCapacity("-c");
+            argv.appendAssumeCapacity(command.raw_cmd);
+            command.argv = try argv.toOwnedSlice(arena);
+        }
     }
 
     var bar: progress.ProgressBar = try .init(arena, .stdout());
@@ -218,6 +249,22 @@ pub fn main() !void {
         _ = prog_name;
 
         const min_samples = 3;
+
+        for (0..warmup_count) |_| {
+            var child = std.process.Child.init(command.argv, arena);
+
+            child.stdin_behavior = .Ignore;
+            child.stdout_behavior = .Ignore;
+            child.stderr_behavior = .Ignore;
+            child.request_resource_usage_statistics = false;
+
+            try child.spawn();
+
+            _ = child.wait() catch |err| {
+                std.debug.print("\nerror: Couldn't execute {s}: {s}\n", .{ command.argv[0], @errorName(err) });
+                std.process.exit(1);
+            };
+        }
 
         const first_start = timer.read();
         var sample_index: usize = 0;
@@ -260,7 +307,12 @@ pub fn main() !void {
                         kperf_trace = KperfTrace.startSampling(
                             arena,
                             &counters,
-                            .{ .target_pid = std.c.getpid(), .is_gpa = false },
+                            .{
+                                .target_pid = std.c.getpid(),
+                                .is_gpa = false,
+                                // TODO: experiment with sampling period to minimize wall_time drift
+                                // .sample_period = 2500 * std.time.ns_per_us
+                            },
                         ) catch |err| {
                             std.debug.panic("unable to start kperf sampling: {t}\n", .{err});
                         };

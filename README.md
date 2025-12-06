@@ -39,8 +39,8 @@ However, crap does report peak memory usage as well as 5 other hardware
 counters, which I personally find useful when doing performance testing. Hey,
 maybe it will inspire the Hyperfine maintainers to add the extra data points!
 
-Crap does not support running the commands in a shell. This has the upside of
-not including shell spawning noise in the data points collected, and the
+By default crap does not run the commands in a shell, use `-s/--shell zsh` to run the command in a shell. 
+This has the upside of not including shell spawning noise in the data points collected, and the
 downside of not supporting strings inside the commands. Hyperfine by default
 runs the commands in a shell, with command line options to disable this.
 

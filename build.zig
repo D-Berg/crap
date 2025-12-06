@@ -25,7 +25,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addOptions("build_options", build_options);
 
     if (target.result.os.tag == .macos)
-        linkMacosFrameWorks(b, exe.root_module, target);
+        linkMacosFrameWorks(b, exe.root_module, target, optimize);
 
     b.installArtifact(exe);
 
@@ -73,7 +73,7 @@ pub fn build(b: *std.Build) void {
         rel_exe.root_module.addOptions("build_options", build_options);
 
         if (resolved_target.result.os.tag == .macos and host_os == .macos)
-            linkMacosFrameWorks(b, rel_exe.root_module, resolved_target);
+            linkMacosFrameWorks(b, rel_exe.root_module, resolved_target, .ReleaseSafe);
 
         const install = b.addInstallArtifact(rel_exe, .{});
         install.dest_dir = .prefix;
@@ -85,10 +85,15 @@ pub fn build(b: *std.Build) void {
     }
 }
 
-fn linkMacosFrameWorks(b: *std.Build, module: *std.Build.Module, target: std.Build.ResolvedTarget) void {
+fn linkMacosFrameWorks(
+    b: *std.Build,
+    module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) void {
     if (host_os != .macos) @panic("Building for macos is only supported on macos due to dependency on xcode-sdk");
     const trans_c = b.addTranslateC(.{
-        .optimize = .ReleaseSafe,
+        .optimize = optimize,
         .target = target,
         .root_source_file = b.path("include/macos.h"),
     });
