@@ -8,6 +8,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const version = manifest.version;
+
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", version);
+
     const exe = b.addExecutable(.{
         .name = @tagName(manifest.name),
         .root_module = b.createModule(.{
@@ -17,6 +22,7 @@ pub fn build(b: *std.Build) void {
             .strip = b.option(bool, "strip", "strip the binary"),
         }),
     });
+    exe.root_module.addOptions("build_options", build_options);
 
     if (target.result.os.tag == .macos)
         linkMacosFrameWorks(b, exe.root_module, target);
@@ -64,6 +70,7 @@ pub fn build(b: *std.Build) void {
                 .strip = true,
             }),
         });
+        rel_exe.root_module.addOptions("build_options", build_options);
 
         if (resolved_target.result.os.tag == .macos and host_os == .macos)
             linkMacosFrameWorks(b, rel_exe.root_module, resolved_target);

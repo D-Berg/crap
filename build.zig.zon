@@ -1,6 +1,6 @@
 .{
     .name = .crap,
-    .version = "0.0.1",
+    .version = "0.1.0",
     .minimum_zig_version = "0.15.2",
     .paths = .{""},
     .fingerprint = 0x7341101504092ff6,

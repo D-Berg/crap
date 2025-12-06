@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const build_options = @import("build_options");
 const PERF = std.os.linux.PERF;
 const fd_t = std.posix.fd_t;
 const pid_t = std.os.pid_t;
@@ -117,7 +118,11 @@ pub fn main() !void {
     var arg_i: usize = 1;
     while (arg_i < args.len) : (arg_i += 1) {
         const arg = args[arg_i];
-        if (!std.mem.startsWith(u8, arg, "-")) {
+        if (std.mem.eql(u8, arg, "version")) {
+            try stdout_w.print("{s}\n", .{build_options.version});
+            try stdout_w.flush();
+            return std.process.cleanExit();
+        } else if (!std.mem.startsWith(u8, arg, "-")) {
             var cmd_argv: std.ArrayList([]const u8) = .empty;
             try parseCmd(arena, &cmd_argv, arg);
             try commands.append(arena, .{
