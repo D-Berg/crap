@@ -54,4 +54,4 @@ Note: on macos to get some of the extra performance counters, sudo privelage is 
 
 ## Credits
  - [andrewrk](https://github.com/andrewrk): original author of poop, also known for advocating to [flush](https://www.youtube.com/watch?v=f30PceqQWko).
- - [tensorrush](https://codeberg.org/tensorush): made support for macos possible, [original pr](https://github.com/andrewrk/poop/pull/70)
+ - [tensorush](https://codeberg.org/tensorush): made support for macos possible, [original pr](https://github.com/andrewrk/poop/pull/70)
