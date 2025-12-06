@@ -1,5 +1,8 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const manifest = @import("build.zig.zon");
+
+const host_os = builtin.os.tag;
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -46,6 +49,7 @@ pub fn build(b: *std.Build) void {
     for (release_targets) |target_query| {
         const resolved_target = b.resolveTargetQuery(target_query);
         const t = resolved_target.result;
+        if (t.os.tag == .macos and host_os != .macos) continue;
         const rel_exe = b.addExecutable(.{
             .name = @tagName(manifest.name),
             .root_module = b.createModule(.{
@@ -56,7 +60,7 @@ pub fn build(b: *std.Build) void {
             }),
         });
 
-        if (resolved_target.result.os.tag == .macos)
+        if (resolved_target.result.os.tag == .macos and host_os == .macos)
             linkMacosFrameWorks(b, rel_exe.root_module, resolved_target);
 
         const install = b.addInstallArtifact(rel_exe, .{});
@@ -70,6 +74,7 @@ pub fn build(b: *std.Build) void {
 }
 
 fn linkMacosFrameWorks(b: *std.Build, module: *std.Build.Module, target: std.Build.ResolvedTarget) void {
+    if (host_os != .macos) @panic("Building for macos is only supported on macos due to dependency on xcode-sdk");
     const trans_c = b.addTranslateC(.{
         .optimize = .ReleaseSafe,
         .target = target,
