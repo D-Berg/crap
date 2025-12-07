@@ -106,7 +106,7 @@ pub fn main() !void {
     defer arena_instance.deinit();
     const arena = arena_instance.allocator();
 
-    const args = try std.process.argsAlloc(arena);
+    var args: std.process.ArgIterator = try .initWithAllocator(arena);
 
     var stdout_buffer: [1024]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
@@ -119,9 +119,8 @@ pub fn main() !void {
     var shell: ?[]const u8 = null;
     var warmup_count: u32 = 0;
 
-    var arg_i: usize = 1;
-    while (arg_i < args.len) : (arg_i += 1) {
-        const arg = args[arg_i];
+    assert(args.next() != null);
+    while (args.next()) |arg| {
         if (!std.mem.startsWith(u8, arg, "-")) {
             var cmd_argv: std.ArrayList([]const u8) = .empty;
             try parseCmd(arena, &cmd_argv, arg);
@@ -136,12 +135,10 @@ pub fn main() !void {
             try stdout_w.flush(); // 💩
             return std.process.cleanExit();
         } else if (std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--duration")) {
-            arg_i += 1;
-            if (arg_i >= args.len) {
+            const next = args.next() orelse {
                 std.debug.print("'{s}' requires a duration in milliseconds.\n{s}", .{ arg, usage_text });
                 std.process.exit(1);
-            }
-            const next = args[arg_i];
+            };
             const max_ms = std.fmt.parseInt(u64, next, 10) catch |err| {
                 std.debug.print("unable to parse --duration argument '{s}': {t}\n", .{
                     next, err,
@@ -150,12 +147,10 @@ pub fn main() !void {
             };
             max_nano_seconds = std.time.ns_per_ms * max_ms;
         } else if (std.mem.eql(u8, arg, "--color")) {
-            arg_i += 1;
-            if (arg_i >= args.len) {
+            const next = args.next() orelse {
                 std.debug.print("'{s}' requires a mode; options are 'auto', 'never', and 'ansi'.\n{s}", .{ arg, usage_text });
                 std.process.exit(1);
-            }
-            const next = args[arg_i];
+            };
             if (std.meta.stringToEnum(ColorMode, next)) |when| {
                 color = when;
             } else {
@@ -174,21 +169,20 @@ pub fn main() !void {
             try stdout_w.flush();
             return std.process.cleanExit();
         } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--shell")) {
-            arg_i += 1;
-            if (arg_i >= args.len) {
-                // TODO: add error message to user
+            shell = args.next() orelse {
                 std.process.exit(1);
-            }
-            const next = args[arg_i];
-            shell = next;
+            };
         } else if (std.mem.eql(u8, arg, "-w") or std.mem.eql(u8, arg, "--warmup")) {
-            arg_i += 1;
-            if (arg_i >= args.len) {
-                // TODO: add error message to user
+            const next = args.next() orelse {
+                std.debug.print("'{s}' requires a count\n", .{arg});
                 std.process.exit(1);
-            }
-            const next = args[arg_i];
-            warmup_count = try std.fmt.parseInt(@TypeOf(warmup_count), next, 10);
+            };
+            warmup_count = std.fmt.parseInt(@TypeOf(warmup_count), next, 10) catch |err| {
+                std.debug.print("unable to parse {s} argument '{s}': {t}\n", .{
+                    arg, next, err,
+                });
+                std.process.exit(1);
+            };
         } else {
             std.debug.print("unrecognized argument: '{s}'\n{s}", .{ arg, usage_text });
             std.process.exit(1);
@@ -250,20 +244,32 @@ pub fn main() !void {
 
         const min_samples = 3;
 
-        for (0..warmup_count) |_| {
-            var child = std.process.Child.init(command.argv, arena);
+        if (warmup_count > 0) {
+            bar.estimate = warmup_count;
+            for (0..warmup_count) |_| {
+                if (tty_conf != .no_color) try bar.render(arena);
+                var child = std.process.Child.init(command.argv, arena);
 
-            child.stdin_behavior = .Ignore;
-            child.stdout_behavior = .Ignore;
-            child.stderr_behavior = .Ignore;
-            child.request_resource_usage_statistics = false;
+                child.stdin_behavior = .Ignore;
+                child.stdout_behavior = .Ignore;
+                child.stderr_behavior = .Ignore;
+                child.request_resource_usage_statistics = false;
 
-            try child.spawn();
+                try child.spawn();
 
-            _ = child.wait() catch |err| {
-                std.debug.print("\nerror: Couldn't execute {s}: {s}\n", .{ command.argv[0], @errorName(err) });
-                std.process.exit(1);
-            };
+                _ = child.wait() catch |err| {
+                    std.debug.print("\nerror: Couldn't execute {s}: {s}\n", .{ command.argv[0], @errorName(err) });
+                    std.process.exit(1);
+                };
+
+                if (tty_conf != .no_color) bar.current += 1;
+            }
+
+            if (tty_conf != .no_color) {
+                try bar.clear();
+                bar.current = 0;
+                bar.estimate = 1;
+            }
         }
 
         const first_start = timer.read();
