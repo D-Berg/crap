@@ -17,7 +17,12 @@ Usage: crap [options] <command1> ... <commandN>
 Compares the performance of the provided commands.
 
 Options:
- --duration <ms>    (default: 5000) how long to repeatedly sample each command
+ -d, --duration <ms>    (default: 5000) how long to repeatedly sample each command
+ --color <when>         (default: auto) color output mode
+                            available options: 'auto', 'never', 'ansi'
+ -s, --shell <shell>    (default: none) specify which shell to run commands in
+ -w, --warmup <count>   (default: 0) specify number of warmups before running each command
+ -f, --allow-failures   (default: false) compare performance if a non-zero exit code is returned
 
 ```
 
