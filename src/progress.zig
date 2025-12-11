@@ -39,7 +39,15 @@ pub fn getScreenWidth(stdout: std.posix.fd_t) usize {
     switch (comptime builtin.os.tag) {
         .linux => _ = std.os.linux.ioctl(stdout, TIOCGWINSZ, @intFromPtr(&winsize)),
         .macos => _ = std.c.ioctl(stdout, TIOCGWINSZ, &winsize),
-        else => unreachable,
+        .windows => {
+            // https://stackoverflow.com/questions/6812224/getting-terminal-size-in-c-for-windows
+            var info: std.os.windows.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+            if (std.os.windows.kernel32.GetConsoleScreenBufferInfo(stdout, &info) != std.os.windows.TRUE) {
+                return 80;
+            }
+            return @intCast(info.dwSize.X);
+        },
+        else => @compileError("Unsupported OS"),
     }
     return @intCast(winsize.ws_col);
 }
