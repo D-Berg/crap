@@ -16,19 +16,7 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
 
-    const exe = b.addExecutable(.{
-        .name = @tagName(manifest.name),
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .strip = b.option(bool, "strip", "strip the binary"),
-        }),
-    });
-    exe.root_module.addOptions("build_options", build_options);
-
-    if (target.result.os.tag == .macos)
-        linkMacosFrameWorks(b, exe.root_module, target, optimize);
+    const exe = makeCrapExectutable(b, target, optimize, null, build_options);
 
     b.installArtifact(exe);
 
@@ -63,20 +51,10 @@ pub fn build(b: *std.Build) void {
     for (release_targets) |target_query| {
         const resolved_target = b.resolveTargetQuery(target_query);
         const t = resolved_target.result;
-        if (t.os.tag == .macos and host_os != .macos) continue;
-        const rel_exe = b.addExecutable(.{
-            .name = @tagName(manifest.name),
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/main.zig"),
-                .target = resolved_target,
-                .optimize = .ReleaseSafe,
-                .strip = true,
-            }),
-        });
-        rel_exe.root_module.addOptions("build_options", build_options);
 
-        if (resolved_target.result.os.tag == .macos and host_os == .macos)
-            linkMacosFrameWorks(b, rel_exe.root_module, resolved_target, .ReleaseSafe);
+        if (t.os.tag == .macos and host_os != .macos) continue;
+
+        const rel_exe = makeCrapExectutable(b, resolved_target, .ReleaseSafe, true, build_options);
 
         const prefix = b.fmt("{s}-{t}-{t}-{s}", .{
             rel_exe.name, t.cpu.arch, t.os.tag, version,
@@ -102,34 +80,54 @@ pub fn build(b: *std.Build) void {
     }
 }
 
-fn linkMacosFrameWorks(
+fn makeCrapExectutable(
     b: *std.Build,
-    module: *std.Build.Module,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-) void {
-    if (host_os != .macos) @panic("Building for macos is only supported on macos due to dependency on xcode-sdk");
-    const trans_c = b.addTranslateC(.{
-        .optimize = optimize,
-        .target = target,
-        .root_source_file = b.path("include/macos.h"),
+    strip: ?bool,
+    build_options: *std.Build.Step.Options,
+) *std.Build.Step.Compile {
+    const exe = b.addExecutable(.{
+        .name = @tagName(manifest.name),
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .strip = strip,
+        }),
     });
+    const mod = exe.root_module;
+    mod.addOptions("build_options", build_options);
+    switch (target.result.os.tag) {
+        .linux => {},
+        .macos => {
+            if (host_os != .macos) @panic("Cross compiling to macos is unsupported");
+            const trans_c = b.addTranslateC(.{
+                .target = target,
+                .optimize = optimize,
+                .root_source_file = b.path("include/macos.h"),
+            });
 
-    const sdk_path = std.zig.system.darwin.getSdk(b.allocator, &target.result) orelse
-        @panic("Failed to find SDK!");
+            const sdk_path = std.zig.system.darwin.getSdk(b.allocator, &target.result) orelse
+                @panic("Failed to find SDK!");
 
-    trans_c.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{
-        sdk_path,
-        "usr/include",
-    }) });
+            trans_c.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{
+                sdk_path,
+                "usr/include",
+            }) });
 
-    module.addSystemFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{
-        sdk_path,
-        "System/Library/PrivateFrameworks",
-    }) });
-    module.linkFramework("kperf", .{});
-    module.linkFramework("kperfdata", .{});
-    module.addImport("c", trans_c.createModule());
+            mod.addSystemFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{
+                sdk_path,
+                "System/Library/PrivateFrameworks",
+            }) });
+            mod.linkFramework("kperf", .{});
+            mod.linkFramework("kperfdata", .{});
+            mod.addImport("c", trans_c.createModule());
+        },
+        else => |os| std.debug.panic("Unsupported OS: {t}", .{os}),
+    }
+
+    return exe;
 }
 
 // https://codeberg.org/ziglang/zig/src/branch/master/build.zig
