@@ -218,7 +218,9 @@ pub fn main() !void {
         .ansi => .escape_codes,
     };
 
-    var perf_fds: [perf_measurements.len]fd_t = @splat(-1);
+    var perf_fds: [perf_measurements.len]fd_t = undefined;
+    if (builtin.os.tag == .linux) perf_fds = @splat(-1);
+
     var samples_buf: [MAX_SAMPLES]Sample = undefined;
 
     // kperf (Darwin)
@@ -324,6 +326,7 @@ pub fn main() !void {
                         };
                     }
                 },
+                .windows => {},
                 else => unreachable,
             }
 
@@ -371,6 +374,7 @@ pub fn main() !void {
             switch (comptime builtin.os.tag) {
                 .linux => _ = std.os.linux.ioctl(perf_fds[0], PERF.EVENT_IOC.DISABLE, PERF.IOC_FLAG_GROUP),
                 .macos => if (is_root) try kperf_trace.stopSampling(),
+                .windows => {},
                 else => unreachable,
             }
             const peak_rss = child.resource_usage_statistics.getMaxRss() orelse 0;
@@ -431,6 +435,15 @@ pub fn main() !void {
                     .cache_references = 0,
                     .cache_misses = if (is_root) counters.get(.DataCacheMisses) + counters.get(.InstructionCacheMisses) else 0,
                     .branch_misses = if (is_root) counters.get(.BranchMisses) else 0,
+                },
+                .windows => .{
+                    .wall_time = end - start,
+                    .peak_rss = peak_rss,
+                    .cpu_cycles = 0,
+                    .instructions = 0,
+                    .cache_references = 0,
+                    .cache_misses = 0,
+                    .branch_misses = 0,
                 },
                 else => unreachable,
             };
