@@ -21,6 +21,8 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     const release = b.step("release", "make an upstream binary release");
+    const release_archives = b.step("release-archives", "make an upstream tar release");
+    release_archives.dependOn(release);
     const release_targets = [_]std.Target.Query{
         .{
             .cpu_arch = .aarch64,
@@ -75,8 +77,9 @@ pub fn build(b: *std.Build) void {
         tar.addArg(prefix);
 
         const install_tar = b.addInstallFileWithDir(out_file, .prefix, b.fmt("release-archives/{s}.tar.gz", .{prefix}));
-        release.dependOn(&install_tar.step);
+
         release.dependOn(&install.step);
+        release_archives.dependOn(&install_tar.step);
     }
 }
 
