@@ -78,12 +78,26 @@ pub fn build(b: *std.Build) void {
         if (resolved_target.result.os.tag == .macos and host_os == .macos)
             linkMacosFrameWorks(b, rel_exe.root_module, resolved_target, .ReleaseSafe);
 
-        const install = b.addInstallArtifact(rel_exe, .{});
-        install.dest_dir = .prefix;
-        install.dest_sub_path = b.fmt("{s}-{s}-{s}", .{
-            @tagName(t.cpu.arch), @tagName(t.os.tag), rel_exe.name,
+        const prefix = b.fmt("{s}-{t}-{t}-{s}", .{
+            rel_exe.name, t.cpu.arch, t.os.tag, version,
         });
+        const install = b.addInstallArtifact(rel_exe, .{});
+        install.dest_dir = .{ .custom = b.fmt("release/{s}/bin", .{prefix}) };
+        install.dest_sub_path = rel_exe.name;
 
+        const wf = b.addWriteFiles();
+        const rel_exe_name = b.fmt("{s}/bin/{s}", .{ prefix, rel_exe.out_filename });
+        _ = wf.addCopyFile(rel_exe.getEmittedBin(), rel_exe_name);
+
+        const tar = b.addSystemCommand(&.{ "tar", "czf" });
+        // https://unix.stackexchange.com/questions/282055/a-lot-of-files-inside-a-tar
+        if (builtin.os.tag == .macos) tar.setEnvironmentVariable("COPYFILE_DISABLE", "1");
+        tar.setCwd(wf.getDirectory());
+        const out_file = tar.addOutputFileArg(b.fmt("{s}.tar.gz", .{prefix}));
+        tar.addArg(prefix);
+
+        const install_tar = b.addInstallFileWithDir(out_file, .prefix, b.fmt("release-archives/{s}.tar.gz", .{prefix}));
+        release.dependOn(&install_tar.step);
         release.dependOn(&install.step);
     }
 }
