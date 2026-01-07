@@ -23,33 +23,31 @@ pub fn build(b: *std.Build) void {
     const release = b.step("release", "make an upstream binary release");
     const release_archives = b.step("release-archives", "make an upstream tar release");
     release_archives.dependOn(release);
-    const release_targets = [_]std.Target.Query{
-        .{
-            .cpu_arch = .aarch64,
-            .os_tag = .linux,
-        },
-        .{
-            .cpu_arch = .x86_64,
-            .os_tag = .linux,
-        },
-        .{
-            .cpu_arch = .x86,
-            .os_tag = .linux,
-        },
-        .{
-            .cpu_arch = .riscv64,
-            .os_tag = .linux,
-        },
-        .{
-            .cpu_arch = .aarch64,
-            .os_tag = .macos,
-        },
-
-        .{
-            .cpu_arch = .x86_64,
-            .os_tag = .macos,
-        },
-    };
+    const release_targets = [_]std.Target.Query{ .{
+        .cpu_arch = .aarch64,
+        .os_tag = .linux,
+    }, .{
+        .cpu_arch = .x86_64,
+        .os_tag = .linux,
+    }, .{
+        .cpu_arch = .x86,
+        .os_tag = .linux,
+    }, .{
+        .cpu_arch = .riscv64,
+        .os_tag = .linux,
+    }, .{
+        .cpu_arch = .aarch64,
+        .os_tag = .macos,
+    }, .{
+        .cpu_arch = .x86_64,
+        .os_tag = .macos,
+    }, .{
+        .cpu_arch = .x86_64,
+        .os_tag = .windows,
+    }, .{
+        .cpu_arch = .aarch64,
+        .os_tag = .windows,
+    } };
     for (release_targets) |target_query| {
         const resolved_target = b.resolveTargetQuery(target_query);
         const t = resolved_target.result;
@@ -102,7 +100,7 @@ fn makeCrapExectutable(
     const mod = exe.root_module;
     mod.addOptions("build_options", build_options);
     switch (target.result.os.tag) {
-        .linux => {},
+        .linux, .windows => {},
         .macos => {
             if (host_os != .macos) @panic("Cross compiling to macos is unsupported");
             const trans_c = b.addTranslateC(.{

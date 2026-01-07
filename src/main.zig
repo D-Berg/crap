@@ -194,13 +194,22 @@ pub fn main() !void {
         try stdout_w.flush(); // 💩
         std.process.exit(1);
     }
+    // Set codepage to UTF-8 to ensure that everything renders correctly on Windows
+    var console_cp: c_uint = undefined;
+    if (builtin.os.tag == .windows) {
+        console_cp = std.os.windows.kernel32.GetConsoleOutputCP();
+        _ = std.os.windows.kernel32.SetConsoleOutputCP(65001);
+    }
+    defer if (builtin.os.tag == .windows) {
+        _ = std.os.windows.kernel32.SetConsoleOutputCP(console_cp);
+    };
 
     if (shell) |sh| {
         for (commands.items) |*command| {
             var argv: std.ArrayList([]const u8) = .empty;
             try argv.ensureUnusedCapacity(arena, 3);
             argv.appendAssumeCapacity(sh);
-            argv.appendAssumeCapacity("-c");
+            argv.appendAssumeCapacity(if (builtin.os.tag == .windows) "\\c" else "-c");
             argv.appendAssumeCapacity(command.raw_cmd);
             command.argv = try argv.toOwnedSlice(arena);
         }
@@ -218,7 +227,9 @@ pub fn main() !void {
         .ansi => .escape_codes,
     };
 
-    var perf_fds: [perf_measurements.len]fd_t = @splat(-1);
+    var perf_fds: [perf_measurements.len]fd_t = undefined;
+    if (builtin.os.tag == .linux) perf_fds = @splat(-1);
+
     var samples_buf: [MAX_SAMPLES]Sample = undefined;
 
     // kperf (Darwin)
@@ -324,6 +335,7 @@ pub fn main() !void {
                         };
                     }
                 },
+                .windows => {},
                 else => unreachable,
             }
 
@@ -371,6 +383,7 @@ pub fn main() !void {
             switch (comptime builtin.os.tag) {
                 .linux => _ = std.os.linux.ioctl(perf_fds[0], PERF.EVENT_IOC.DISABLE, PERF.IOC_FLAG_GROUP),
                 .macos => if (is_root) try kperf_trace.stopSampling(),
+                .windows => {},
                 else => unreachable,
             }
             const peak_rss = child.resource_usage_statistics.getMaxRss() orelse 0;
@@ -431,6 +444,15 @@ pub fn main() !void {
                     .cache_references = 0,
                     .cache_misses = if (is_root) counters.get(.DataCacheMisses) + counters.get(.InstructionCacheMisses) else 0,
                     .branch_misses = if (is_root) counters.get(.BranchMisses) else 0,
+                },
+                .windows => .{
+                    .wall_time = end - start,
+                    .peak_rss = peak_rss,
+                    .cpu_cycles = 0,
+                    .instructions = 0,
+                    .cache_references = 0,
+                    .cache_misses = 0,
+                    .branch_misses = 0,
                 },
                 else => unreachable,
             };
