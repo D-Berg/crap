@@ -209,7 +209,7 @@ pub fn main() !void {
             var argv: std.ArrayList([]const u8) = .empty;
             try argv.ensureUnusedCapacity(arena, 3);
             argv.appendAssumeCapacity(sh);
-            argv.appendAssumeCapacity(if (builtin.os.tag == .windows) "\\c" else "-c");
+            argv.appendAssumeCapacity(if (builtin.os.tag == .windows) "/C" else "-c");
             argv.appendAssumeCapacity(command.raw_cmd);
             command.argv = try argv.toOwnedSlice(arena);
         }
