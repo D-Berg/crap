@@ -26,12 +26,26 @@ Options:
 
 ```
 
-## Building from Source
+## Supported Platforms and counters
+
+|     Counters     | Linux | macOS | Windows |
+|------------------|-------|-------|---------|
+| wall_time        |  yes  |  yes  |   yes   |
+| peak_rss         |  yes  |  yes  |   yes   |
+| cpu_cycles       |  yes  |  sudo |   no    |
+| instructions     |  yes  |  sudo |   no    |
+| cache_references |  yes  |  no   |   no    |
+| cache_misses     |  yes  |  sudo |   no    |
+| branch_misses    |  yes  |  sudo |   no    |
+
+
+## Building from source and installation
 
 Tested with [Zig](https://ziglang.org/) `0.15.2`.
 
 ```
-zig build
+# set install path to ~/.local to install in ~/.local/bin
+zig build -Doptimize=ReleaseSafe -p <install_path>
 ```
 
 ## Comparison with Hyperfine
