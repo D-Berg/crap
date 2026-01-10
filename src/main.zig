@@ -5,6 +5,7 @@ const PERF = std.os.linux.PERF;
 const fd_t = std.posix.fd_t;
 const pid_t = std.os.pid_t;
 const assert = std.debug.assert;
+const log = std.log;
 const progress = @import("progress.zig");
 const MAX_SAMPLES = 10_000;
 
@@ -136,11 +137,11 @@ pub fn main() !void {
             return std.process.cleanExit();
         } else if (std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--duration")) {
             const next = args.next() orelse {
-                std.debug.print("'{s}' requires a duration in milliseconds.\n{s}", .{ arg, usage_text });
+                log.err("'{s}' requires a duration in milliseconds.\n{s}", .{ arg, usage_text });
                 std.process.exit(1);
             };
             const max_ms = std.fmt.parseInt(u64, next, 10) catch |err| {
-                std.debug.print("unable to parse --duration argument '{s}': {t}\n", .{
+                log.err("unable to parse --duration argument '{s}': {t}", .{
                     next, err,
                 });
                 std.process.exit(1);
@@ -148,13 +149,13 @@ pub fn main() !void {
             max_nano_seconds = std.time.ns_per_ms * max_ms;
         } else if (std.mem.eql(u8, arg, "--color")) {
             const next = args.next() orelse {
-                std.debug.print("'{s}' requires a mode; options are 'auto', 'never', and 'ansi'.\n{s}", .{ arg, usage_text });
+                log.err("'{s}' requires a mode; options are 'auto', 'never', and 'ansi'.\n{s}", .{ arg, usage_text });
                 std.process.exit(1);
             };
             if (std.meta.stringToEnum(ColorMode, next)) |when| {
                 color = when;
             } else {
-                std.debug.print(
+                log.err(
                     \\unable to parse --color argument '{s}'
                     \\
                     \\available options are 'auto', 'never' and 'ansi'
@@ -170,21 +171,22 @@ pub fn main() !void {
             return std.process.cleanExit();
         } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--shell")) {
             shell = args.next() orelse {
+                log.err("'{s}' requires a named shell", .{arg});
                 std.process.exit(1);
             };
         } else if (std.mem.eql(u8, arg, "-w") or std.mem.eql(u8, arg, "--warmup")) {
             const next = args.next() orelse {
-                std.debug.print("'{s}' requires a count\n", .{arg});
+                log.err("'{s}' requires a count", .{arg});
                 std.process.exit(1);
             };
             warmup_count = std.fmt.parseInt(@TypeOf(warmup_count), next, 10) catch |err| {
-                std.debug.print("unable to parse {s} argument '{s}': {t}\n", .{
+                log.err("unable to parse {s} argument '{s}': {t}", .{
                     arg, next, err,
                 });
                 std.process.exit(1);
             };
         } else {
-            std.debug.print("unrecognized argument: '{s}'\n{s}", .{ arg, usage_text });
+            log.err("unrecognized argument: '{s}'\n{s}", .{ arg, usage_text });
             std.process.exit(1);
         }
     }
@@ -241,6 +243,10 @@ pub fn main() !void {
 
     var timer = std.time.Timer.start() catch @panic("need timer to work");
 
+    var stderr_writer_buf: [1024]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_writer_buf);
+    const stderr: *std.Io.Writer = &stderr_writer.interface;
+
     for (commands.items, 1..) |*command, command_n| {
         stderr_fba.reset();
 
@@ -269,7 +275,7 @@ pub fn main() !void {
                 try child.spawn();
 
                 _ = child.wait() catch |err| {
-                    std.debug.print("\nerror: Couldn't execute {s}: {s}\n", .{ command.argv[0], @errorName(err) });
+                    log.err("Couldn't execute {s}: {s}", .{ command.argv[0], @errorName(err) });
                     std.process.exit(1);
                 };
 
@@ -376,7 +382,7 @@ pub fn main() !void {
             }
 
             const term = child.wait() catch |err| {
-                std.debug.print("\nerror: Couldn't execute {s}: {t}\n", .{ command.argv[0], err });
+                log.err("Couldn't execute {s}: {t}", .{ command.argv[0], err });
                 std.process.exit(1);
             };
             const end = timer.read();
@@ -391,15 +397,14 @@ pub fn main() !void {
             switch (term) {
                 .Exited => |code| {
                     if (code != 0 and !allow_failures) {
-                        if (tty_conf != .no_color)
-                            bar.clear() catch {};
-                        std.debug.print("\nerror: Benchmark {d} command '{s}' failed with exit code {d}:\n", .{
+                        if (tty_conf != .no_color) bar.clear() catch {};
+                        log.err("Benchmark {d} command '{s}' failed with exit code {d}:\n", .{
                             command_n,
                             command.raw_cmd,
                             code,
                         });
                         if (stderr_truncated) {
-                            std.debug.print(
+                            try stderr.print(
                                 \\────────────── truncated stderr ──────────────
                                 \\{s}
                                 \\──────────────────────────────────────────────
@@ -408,7 +413,7 @@ pub fn main() !void {
                                 .{child_stderr.buffer[child_stderr.seek..][0..child_stderr.end]},
                             );
                         } else {
-                            std.debug.print(
+                            try stderr.print(
                                 \\─────────────────── stderr ───────────────────
                                 \\{s}
                                 \\──────────────────────────────────────────────
@@ -417,11 +422,12 @@ pub fn main() !void {
                                 .{child_stderr.buffer[child_stderr.seek..][0..child_stderr.end]},
                             );
                         }
+                        try stderr.flush();
                         std.process.exit(1);
                     }
                 },
                 else => {
-                    std.debug.print("error: terminated unexpectedly\n", .{});
+                    log.err("terminated unexpectedly", .{});
                     std.process.exit(1);
                 },
             }
