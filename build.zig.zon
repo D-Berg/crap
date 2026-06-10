@@ -1,7 +1,7 @@
 .{
     .name = .crap,
     .version = "0.1.0",
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.17.0-dev.813+2153f8143",
     .paths = .{""},
     .fingerprint = 0x7341101504092ff6,
 }

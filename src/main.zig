@@ -3,7 +3,6 @@ const builtin = @import("builtin");
 const build_options = @import("build_options");
 const PERF = std.os.linux.PERF;
 const fd_t = std.posix.fd_t;
-const pid_t = std.os.pid_t;
 const assert = std.debug.assert;
 const log = std.log;
 const progress = @import("progress.zig");
@@ -102,16 +101,16 @@ const ColorMode = enum {
     ansi,
 };
 
-pub fn main() !void {
-    var arena_instance: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
-    defer arena_instance.deinit();
-    const arena = arena_instance.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const arena = init.arena.allocator();
 
-    var args: std.process.ArgIterator = try .initWithAllocator(arena);
+    var args = try init.minimal.args.iterateAllocator(arena);
 
-    var stdout_buffer: [1024]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
-    const stdout_w = &stdout_writer.interface;
+    var stdout_file_writer_buffer: [1024]u8 = undefined;
+    const stdout_file: std.Io.File = .stdout();
+    var stdout_file_writer = stdout_file.writer(io, &stdout_file_writer_buffer);
+    const stdout_w = &stdout_file_writer.interface;
 
     var commands: std.ArrayList(Command) = .empty;
     var max_nano_seconds: u64 = std.time.ns_per_s * 5;
@@ -134,7 +133,7 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             try stdout_w.writeAll(usage_text);
             try stdout_w.flush(); // 💩
-            return std.process.cleanExit();
+            return std.process.cleanExit(io);
         } else if (std.mem.eql(u8, arg, "-d") or std.mem.eql(u8, arg, "--duration")) {
             const next = args.next() orelse {
                 log.err("'{s}' requires a duration in milliseconds.\n{s}", .{ arg, usage_text });
@@ -168,7 +167,7 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--version")) {
             try stdout_w.print("{s}\n", .{build_options.version});
             try stdout_w.flush();
-            return std.process.cleanExit();
+            return std.process.cleanExit(io);
         } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--shell")) {
             shell = args.next() orelse {
                 log.err("'{s}' requires a named shell", .{arg});
@@ -199,11 +198,16 @@ pub fn main() !void {
     // Set codepage to UTF-8 to ensure that everything renders correctly on Windows
     var console_cp: c_uint = undefined;
     if (builtin.os.tag == .windows) {
-        console_cp = std.os.windows.kernel32.GetConsoleOutputCP();
-        _ = std.os.windows.kernel32.SetConsoleOutputCP(65001);
+        var query = std.os.windows.CONSOLE.USER_IO.GET_CP(.Output);
+        _ = try query.operate(io, stdout_file);
+        _ = try std.os.windows.CONSOLE.USER_IO.SET_CP(.Output, 65001).operate(io, stdout_file);
+        console_cp = query.Data.CodePage;
     }
     defer if (builtin.os.tag == .windows) {
-        _ = std.os.windows.kernel32.SetConsoleOutputCP(console_cp);
+        _ = std.os.windows.CONSOLE.USER_IO.SET_CP(.Output, console_cp).operate(io, stdout_file) catch |err|
+            switch (err) {
+                error.Canceled => {},
+            };
     };
 
     if (shell) |sh| {
@@ -217,16 +221,25 @@ pub fn main() !void {
         }
     }
 
-    var bar: progress.ProgressBar = try .init(arena, .stdout());
+    var bar: progress.ProgressBar = try .init(io, arena, stdout_file);
 
     var is_root: bool = false;
     if (builtin.os.tag == .macos) {
-        if (std.posix.getuid() == 0) is_root = true;
+        if (std.c.getuid() == 0) is_root = true;
     }
-    const tty_conf: std.Io.tty.Config = switch (color) {
-        .auto => .detect(.stdout()),
-        .never => .no_color,
-        .ansi => .escape_codes,
+
+    const terminal: std.Io.Terminal = .{
+        .writer = stdout_w,
+        .mode = switch (color) {
+            .auto => try .detect(
+                io,
+                stdout_file,
+                try init.minimal.environ.contains(arena, "NO_COLOR"),
+                try init.minimal.environ.contains(arena, "CLICOLOR_FORCE"),
+            ),
+            .never => .no_color,
+            .ansi => .escape_codes,
+        },
     };
 
     var perf_fds: [perf_measurements.len]fd_t = undefined;
@@ -238,64 +251,53 @@ pub fn main() !void {
     var counters = std.EnumArray(CounterAlias, u64).initUndefined();
     var kperf_trace: KperfTrace = undefined;
 
-    var stderr_buffer: [4096]u8 = undefined;
-    var stderr_fba: std.heap.FixedBufferAllocator = .init(&stderr_buffer);
-
-    var timer = std.time.Timer.start() catch @panic("need timer to work");
-
-    var stderr_writer_buf: [1024]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_writer_buf);
-    const stderr: *std.Io.Writer = &stderr_writer.interface;
-
     for (commands.items, 1..) |*command, command_n| {
-        stderr_fba.reset();
-
-        const max_prog_name_len = 50;
-        const prog_name = blk: {
-            if (command.raw_cmd.len > max_prog_name_len) {
-                break :blk try std.fmt.allocPrint(arena, "'{s}...'", .{command.raw_cmd[0 .. max_prog_name_len - 3]});
-            }
-            break :blk try std.fmt.allocPrint(arena, "'{s}'", .{command.raw_cmd});
-        };
-        _ = prog_name;
+        // const max_prog_name_len = 50;
+        // const prog_name = blk: {
+        //     if (command.raw_cmd.len > max_prog_name_len) {
+        //         break :blk try std.fmt.allocPrint(arena, "'{s}...'", .{command.raw_cmd[0 .. max_prog_name_len - 3]});
+        //     }
+        //     break :blk try std.fmt.allocPrint(arena, "'{s}'", .{command.raw_cmd});
+        // };
+        // _ = prog_name;
 
         const min_samples = 3;
 
         if (warmup_count > 0) {
             bar.estimate = warmup_count;
             for (0..warmup_count) |_| {
-                if (tty_conf != .no_color) try bar.render(arena);
-                var child = std.process.Child.init(command.argv, arena);
+                if (terminal.mode != .no_color) try bar.render(io);
 
-                child.stdin_behavior = .Ignore;
-                child.stdout_behavior = .Ignore;
-                child.stderr_behavior = .Ignore;
-                child.request_resource_usage_statistics = false;
+                var child = try std.process.spawn(io, .{
+                    .argv = command.argv,
+                    .stdin = .inherit,
+                    .stdout = .ignore,
+                    .stderr = .pipe,
+                    .request_resource_usage_statistics = true,
+                });
 
-                try child.spawn();
-
-                _ = child.wait() catch |err| {
+                _ = child.wait(io) catch |err| {
                     log.err("Couldn't execute {s}: {s}", .{ command.argv[0], @errorName(err) });
                     std.process.exit(1);
                 };
 
-                if (tty_conf != .no_color) bar.current += 1;
+                if (terminal.mode != .no_color) bar.current += 1;
             }
 
-            if (tty_conf != .no_color) {
-                try bar.clear();
+            if (terminal.mode != .no_color) {
+                try bar.clear(io);
                 bar.current = 0;
                 bar.estimate = 1;
             }
         }
 
-        const first_start = timer.read();
+        const first_start: std.Io.Timestamp = .now(io, .awake);
         var sample_index: usize = 0;
         while ((sample_index < min_samples or
-            (timer.read() - first_start) < max_nano_seconds) and
+            first_start.untilNow(io, .awake).toNanoseconds() < max_nano_seconds) and
             sample_index < samples_buf.len) : (sample_index += 1)
         {
-            if (tty_conf != .no_color) try bar.render(arena);
+            if (terminal.mode != .no_color) try bar.render(io);
 
             switch (comptime builtin.os.tag) {
                 .linux => {
@@ -328,6 +330,7 @@ pub fn main() !void {
                 .macos => {
                     if (is_root) {
                         kperf_trace = KperfTrace.startSampling(
+                            io,
                             arena,
                             &counters,
                             .{
@@ -345,47 +348,38 @@ pub fn main() !void {
                 else => unreachable,
             }
 
-            var child: std.process.Child = .init(command.argv, arena);
+            const start: std.Io.Timestamp = .now(io, .awake);
 
-            child.stdin_behavior = .Ignore;
-            child.stdout_behavior = .Ignore;
-            child.stderr_behavior = .Pipe;
-            child.request_resource_usage_statistics = true;
+            var child = try std.process.spawn(io, .{
+                .argv = command.argv,
+                .stdin = .inherit,
+                .stdout = .ignore,
+                .stderr = .pipe,
+                .request_resource_usage_statistics = true,
+            });
 
-            const start = timer.read();
-            try child.spawn();
+            var child_stderr_buffer: [4096]u8 = undefined;
+            var child_stderr = child.stderr.?.reader(io, &child_stderr_buffer);
 
-            var poller = std.Io.poll(stderr_fba.allocator(), enum { stderr }, .{ .stderr = child.stderr.? });
-            defer poller.deinit();
+            var stderr_buffer: [4096]u8 = undefined;
+            var stderr_w: std.Io.Writer = .fixed(&stderr_buffer);
 
-            const child_stderr = poller.reader(.stderr);
-            var stderr_truncated = false;
+            var discarded: ?usize = null;
 
-            while (true) {
-                const keep_polling = poller.poll() catch {
-                    stderr_truncated = true;
+            while (true) _ = child_stderr.interface.stream(&stderr_w, .unlimited) catch |err| switch (err) {
+                error.ReadFailed => return child_stderr.err.?,
+                error.WriteFailed => {
+                    discarded = try child_stderr.interface.discardRemaining();
                     break;
-                };
-                if (!keep_polling) break;
-            }
+                },
+                error.EndOfStream => break,
+            };
 
-            if (stderr_truncated) {
-                // continue reading to consume all stderr to prevent deadlocking
-                var overflow_buffer: [4096]u8 = undefined;
-
-                while (true) {
-                    var reader = child.stderr.?.reader(&.{});
-                    const amt = try reader.interface.readSliceShort(&overflow_buffer);
-
-                    if (amt == 0) break;
-                }
-            }
-
-            const term = child.wait() catch |err| {
+            const term = child.wait(io) catch |err| {
                 log.err("Couldn't execute {s}: {t}", .{ command.argv[0], err });
                 std.process.exit(1);
             };
-            const end = timer.read();
+            const elapsed = start.untilNow(io, .awake);
             switch (comptime builtin.os.tag) {
                 .linux => _ = std.os.linux.ioctl(perf_fds[0], PERF.EVENT_IOC.DISABLE, PERF.IOC_FLAG_GROUP),
                 .macos => if (is_root) try kperf_trace.stopSampling(),
@@ -395,34 +389,34 @@ pub fn main() !void {
             const peak_rss = child.resource_usage_statistics.getMaxRss() orelse 0;
 
             switch (term) {
-                .Exited => |code| {
+                .exited => |code| {
                     if (code != 0 and !allow_failures) {
-                        if (tty_conf != .no_color) bar.clear() catch {};
+                        if (terminal.mode != .no_color) bar.clear(io) catch {};
                         log.err("Benchmark {d} command '{s}' failed with exit code {d}:\n", .{
                             command_n,
                             command.raw_cmd,
                             code,
                         });
-                        if (stderr_truncated) {
-                            try stderr.print(
+                        if (discarded) |_| {
+                            try stderr_w.print(
                                 \\────────────── truncated stderr ──────────────
                                 \\{s}
                                 \\──────────────────────────────────────────────
                                 \\
                             ,
-                                .{child_stderr.buffer[child_stderr.seek..][0..child_stderr.end]},
+                                .{stderr_w.buffered()},
                             );
                         } else {
-                            try stderr.print(
+                            try stderr_w.print(
                                 \\─────────────────── stderr ───────────────────
                                 \\{s}
                                 \\──────────────────────────────────────────────
                                 \\
                             ,
-                                .{child_stderr.buffer[child_stderr.seek..][0..child_stderr.end]},
+                                .{stderr_w.buffered()},
                             );
                         }
-                        try stderr.flush();
+                        try stderr_w.flush();
                         std.process.exit(1);
                     }
                 },
@@ -434,7 +428,7 @@ pub fn main() !void {
 
             samples_buf[sample_index] = switch (comptime builtin.os.tag) {
                 .linux => .{
-                    .wall_time = end - start,
+                    .wall_time = @intCast(elapsed.toNanoseconds()),
                     .peak_rss = peak_rss,
                     .cpu_cycles = readPerfFd(perf_fds[0]),
                     .instructions = readPerfFd(perf_fds[1]),
@@ -443,7 +437,7 @@ pub fn main() !void {
                     .branch_misses = readPerfFd(perf_fds[4]),
                 },
                 .macos => .{
-                    .wall_time = end - start,
+                    .wall_time = @intCast(elapsed.toNanoseconds()),
                     .peak_rss = peak_rss,
                     .cpu_cycles = if (is_root) counters.get(.Cycles) else 0,
                     .instructions = if (is_root) counters.get(.Instructions) else 0,
@@ -452,7 +446,7 @@ pub fn main() !void {
                     .branch_misses = if (is_root) counters.get(.BranchMisses) else 0,
                 },
                 .windows => .{
-                    .wall_time = end - start,
+                    .wall_time = @intCast(elapsed.toNanoseconds()),
                     .peak_rss = peak_rss,
                     .cpu_cycles = 0,
                     .instructions = 0,
@@ -470,10 +464,10 @@ pub fn main() !void {
                 }
             }
 
-            if (tty_conf != .no_color) {
+            if (terminal.mode != .no_color) {
                 bar.estimate = est_total: {
                     const cur_samples: u64 = sample_index + 1;
-                    const ns_per_sample = (timer.read() - first_start) / cur_samples;
+                    const ns_per_sample: u64 = @intCast(@divTrunc(first_start.untilNow(io, .awake).toNanoseconds(), cur_samples));
                     const estimate = std.math.divCeil(u64, max_nano_seconds, ns_per_sample) catch unreachable;
                     break :est_total @intCast(@min(MAX_SAMPLES, @max(cur_samples, estimate, min_samples)));
                 };
@@ -481,9 +475,9 @@ pub fn main() !void {
             }
         }
 
-        if (tty_conf != .no_color) {
+        if (terminal.mode != .no_color) {
             // reset bar for next command
-            try bar.clear();
+            try bar.clear(io);
             bar.current = 0;
             bar.estimate = 1;
         }
@@ -502,60 +496,60 @@ pub fn main() !void {
         command.sample_count = all_samples.len;
 
         {
-            try tty_conf.setColor(stdout_w, .bold);
+            try terminal.setColor(.bold);
             try stdout_w.print("Benchmark {d}", .{command_n});
-            try tty_conf.setColor(stdout_w, .dim);
+            try terminal.setColor(.dim);
             try stdout_w.print(" ({d} runs)", .{command.sample_count});
-            try tty_conf.setColor(stdout_w, .reset);
+            try terminal.setColor(.reset);
             try stdout_w.writeAll(":");
             for (command.argv) |arg| try stdout_w.print(" {s}", .{arg});
             try stdout_w.writeAll("\n");
 
-            try tty_conf.setColor(stdout_w, .bold);
+            try terminal.setColor(.bold);
             try stdout_w.writeAll("  measurement");
             try stdout_w.splatByteAll(' ', 23 - "  measurement".len);
-            try tty_conf.setColor(stdout_w, .bright_green);
+            try terminal.setColor(.bright_green);
             try stdout_w.writeAll("mean");
-            try tty_conf.setColor(stdout_w, .reset);
-            try tty_conf.setColor(stdout_w, .bold);
+            try terminal.setColor(.reset);
+            try terminal.setColor(.bold);
             try stdout_w.writeAll(" ± ");
-            try tty_conf.setColor(stdout_w, .green);
+            try terminal.setColor(.green);
             try stdout_w.writeAll("σ");
-            try tty_conf.setColor(stdout_w, .reset);
+            try terminal.setColor(.reset);
 
-            try tty_conf.setColor(stdout_w, .bold);
+            try terminal.setColor(.bold);
             try stdout_w.splatByteAll(' ', 12);
-            try tty_conf.setColor(stdout_w, .cyan);
+            try terminal.setColor(.cyan);
             try stdout_w.writeAll("min");
-            try tty_conf.setColor(stdout_w, .reset);
-            try tty_conf.setColor(stdout_w, .bold);
+            try terminal.setColor(.reset);
+            try terminal.setColor(.bold);
             try stdout_w.writeAll(" … ");
-            try tty_conf.setColor(stdout_w, .magenta);
+            try terminal.setColor(.magenta);
             try stdout_w.writeAll("max");
-            try tty_conf.setColor(stdout_w, .reset);
+            try terminal.setColor(.reset);
 
-            try tty_conf.setColor(stdout_w, .bold);
+            try terminal.setColor(.bold);
             try stdout_w.splatByteAll(' ', 20 - " outliers".len);
-            try tty_conf.setColor(stdout_w, .bright_yellow);
+            try terminal.setColor(.bright_yellow);
             try stdout_w.writeAll("outliers");
-            try tty_conf.setColor(stdout_w, .reset);
+            try terminal.setColor(.reset);
 
             if (commands.items.len >= 2) {
-                try tty_conf.setColor(stdout_w, .bold);
+                try terminal.setColor(.bold);
                 try stdout_w.splatByteAll(' ', 9);
                 try stdout_w.writeAll("delta");
-                try tty_conf.setColor(stdout_w, .reset);
+                try terminal.setColor(.reset);
             }
 
             try stdout_w.writeAll("\n");
 
-            inline for (@typeInfo(Command.Measurements).@"struct".fields) |field| {
-                const measurement = @field(command.measurements, field.name);
+            inline for (@typeInfo(Command.Measurements).@"struct".field_names) |name| {
+                const measurement = @field(command.measurements, name);
                 const first_measurement = if (command_n == 1)
                     null
                 else
-                    @field(commands.items[0].measurements, field.name);
-                try printMeasurement(tty_conf, stdout_w, measurement, field.name, first_measurement, commands.items.len);
+                    @field(commands.items[0].measurements, name);
+                try printMeasurement(terminal, measurement, name, first_measurement, commands.items.len);
             }
 
             try stdout_w.flush(); // 💩
@@ -648,8 +642,7 @@ const Measurement = struct {
 };
 
 fn printMeasurement(
-    tty_conf: std.io.tty.Config,
-    w: *std.Io.Writer,
+    terminal: std.Io.Terminal,
     m: Measurement,
     name: []const u8,
     first_m: ?Measurement,
@@ -657,59 +650,60 @@ fn printMeasurement(
 ) !void {
     if (m.max == 0) return;
 
+    const w = terminal.writer;
     try w.print("  {s}", .{name});
 
     var buf: [200]u8 = undefined;
     var fbs: std.Io.Writer = .fixed(&buf);
     var count: usize = 0;
 
-    const color_enabled = tty_conf != .no_color;
+    const color_enabled = terminal.mode != .no_color;
     const spaces = 32 - ("  (mean  ):".len + name.len + 2);
     try w.splatByteAll(' ', spaces);
-    try tty_conf.setColor(w, .bright_green);
+    try terminal.setColor(.bright_green);
     try printUnit(&fbs, m.mean, m.unit, m.std_dev, color_enabled);
     try w.writeAll(fbs.buffered());
     count += fbs.end;
     fbs.end = 0;
-    try tty_conf.setColor(w, .reset);
+    try terminal.setColor(.reset);
     try w.writeAll(" ± ");
-    try tty_conf.setColor(w, .green);
+    try terminal.setColor(.green);
     try printUnit(&fbs, m.std_dev, m.unit, 0, color_enabled);
     try w.writeAll(fbs.buffered());
     count += fbs.end;
     fbs.end = 0;
-    try tty_conf.setColor(w, .reset);
+    try terminal.setColor(.reset);
 
     try w.splatByteAll(' ', 64 - ("  measurement      ".len + count + 3));
     count = 0;
 
-    try tty_conf.setColor(w, .cyan);
+    try terminal.setColor(.cyan);
     try printUnit(&fbs, @floatFromInt(m.min), m.unit, m.std_dev, color_enabled);
     try w.writeAll(fbs.buffered());
     count += fbs.end;
     fbs.end = 0;
-    try tty_conf.setColor(w, .reset);
+    try terminal.setColor(.reset);
     try w.writeAll(" … ");
-    try tty_conf.setColor(w, .magenta);
+    try terminal.setColor(.magenta);
     try printUnit(&fbs, @floatFromInt(m.max), m.unit, m.std_dev, color_enabled);
     try w.writeAll(fbs.buffered());
     count += fbs.end;
     fbs.end = 0;
-    try tty_conf.setColor(w, .reset);
+    try terminal.setColor(.reset);
 
     try w.splatByteAll(' ', 46 - (count + 1));
     count = 0;
 
     const outlier_percent = @as(f64, @floatFromInt(m.outlier_count)) / @as(f64, @floatFromInt(m.sample_count)) * 100;
     if (outlier_percent >= 10)
-        try tty_conf.setColor(w, .yellow)
+        try terminal.setColor(.yellow)
     else
-        try tty_conf.setColor(w, .dim);
+        try terminal.setColor(.dim);
     try fbs.print("{d: >4.0} ({d: >2.0}%)", .{ m.outlier_count, outlier_percent });
     try w.writeAll(fbs.buffered());
     count += fbs.end;
     fbs.end = 0;
-    try tty_conf.setColor(w, .reset);
+    try terminal.setColor(.reset);
 
     try w.splatByteAll(' ', 19 - (count + 1));
 
@@ -741,19 +735,19 @@ fn printMeasurement(
             if (m.mean > f.mean) {
                 if (is_sig) {
                     try w.writeAll("💩");
-                    try tty_conf.setColor(w, .bright_red);
+                    try terminal.setColor(.bright_red);
                 } else {
-                    try tty_conf.setColor(w, .dim);
+                    try terminal.setColor(.dim);
                     try w.writeAll("  ");
                 }
                 try w.writeAll("+");
             } else {
                 if (is_sig) {
-                    try tty_conf.setColor(w, .bright_yellow);
+                    try terminal.setColor(.bright_yellow);
                     try w.writeAll("⚡");
-                    try tty_conf.setColor(w, .bright_green);
+                    try terminal.setColor(.bright_green);
                 } else {
-                    try tty_conf.setColor(w, .dim);
+                    try terminal.setColor(.dim);
                     try w.writeAll("  ");
                 }
                 try w.writeAll("-");
@@ -763,12 +757,12 @@ fn printMeasurement(
             count += fbs.end;
             fbs.end = 0;
         } else {
-            try tty_conf.setColor(w, .dim);
+            try terminal.setColor(.dim);
             try w.writeAll("0%");
         }
     }
 
-    try tty_conf.setColor(w, .reset);
+    try terminal.setColor(.reset);
     try w.writeAll("\n");
 }
 

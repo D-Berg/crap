@@ -109,7 +109,7 @@ fn makeCrapExectutable(
                 .root_source_file = b.path("include/macos.h"),
             });
 
-            const sdk_path = std.zig.system.darwin.getSdk(b.allocator, &target.result) orelse
+            const sdk_path = std.zig.system.darwin.getSdk(b.allocator, b.graph.io, &target.result) orelse
                 @panic("Failed to find SDK!");
 
             trans_c.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{
@@ -136,11 +136,12 @@ fn getVersion(b: *std.Build) ![]const u8 {
     const version = manifest.version;
     var code: u8 = undefined;
     const git_describe_untrimmed = b.runAllowFail(&[_][]const u8{
-        "git", "-C", b.build_root.path orelse ".",
+        "git",
+        "-C", b.fmt("{f}", .{b.root}), // affects the --git-dir argument
         "--git-dir", ".git", // affected by the -C argument
         "describe", "--match",    "*.*.*", //
         "--tags",   "--abbrev=8",
-    }, &code, .Ignore) catch {
+    }, &code, .ignore) catch {
         return version;
     };
     var git_describe = std.mem.trim(u8, git_describe_untrimmed, " \n\r");

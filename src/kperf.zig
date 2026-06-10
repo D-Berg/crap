@@ -21,7 +21,7 @@ pub fn Trace(comptime E: type) type {
         opts: Options,
 
         /// Process-tracing error set.
-        pub const Error = xnu.Error || std.Thread.SpawnError;
+        pub const Error = xnu.Error || std.Thread.SpawnError || std.Io.Cancelable;
 
         /// Process-tracing options.
         pub const Options = struct {
@@ -40,7 +40,7 @@ pub fn Trace(comptime E: type) type {
         };
 
         /// Start sampling counters.
-        pub fn startSampling(allocator: std.mem.Allocator, counters: *std.EnumArray(E, u64), opts: Options) Error!Self {
+        pub fn startSampling(io: std.Io, allocator: std.mem.Allocator, counters: *std.EnumArray(E, u64), opts: Options) Error!Self {
             // Indicate sampling is in progress
             IS_SAMPLING = true;
 
@@ -116,6 +116,7 @@ pub fn Trace(comptime E: type) type {
             return .{
                 // Spawn counter sampling thread
                 .sample_thread = try .spawn(.{}, sample, .{
+                    io,
                     allocator,
                     counters,
                     counter_map,
@@ -136,20 +137,21 @@ pub fn Trace(comptime E: type) type {
 
             // Disable process tracing
             if (xnu.kdebug_trace_enable(0) != 0) {
-                return Error.DisableTrace;
+                return xnu.Error.DisableTrace;
             }
             if (xnu.kdebug_reset() != 0) {
-                return Error.UnsetTrace;
+                return xnu.Error.UnsetTrace;
             }
             if (xnu.kperf_sample_set(0) != 0) {
-                return Error.UnsetSample;
+                return xnu.Error.UnsetSample;
             }
             if (xnu.kperf_lightweight_pet_set(0) != 0) {
-                return Error.UnsetLightweightPet;
+                return xnu.Error.UnsetLightweightPet;
             }
         }
 
         fn sample(
+            io: std.Io,
             allocator: std.mem.Allocator,
             counters: *std.EnumArray(E, u64),
             counter_map: [xnu.KPC_MAX_COUNTERS]usize,
@@ -161,7 +163,7 @@ pub fn Trace(comptime E: type) type {
             defer if (opts.is_gpa) allocator.free(bufs);
             while (true) {
                 // Wait for more buffers
-                std.Thread.sleep(2 * opts.sample_period);
+                std.Io.sleep(io, .fromNanoseconds(2 * opts.sample_period), .awake) catch |err| @panic(@errorName(err));
 
                 // Expand buffers for next read
                 if (bufs.len - bufs_cur_idx < opts.num_bufs) {
@@ -350,7 +352,7 @@ fn start(comptime E: type, counter_count_opt: ?*u32) xnu.Error![xnu.KPC_MAX_COUN
     var events: [counter_aliases.len]*xnu.kpep_event = undefined;
     inline for (counter_aliases, 0..) |counter_alias, i| {
         events[i] = blk: {
-            for (std.enums.nameCast(xnu.KpepEventAlias, counter_alias).getNames()) |name| {
+            for (@field(xnu.KpepEventAlias, @tagName(counter_alias)).getNames()) |name| {
                 var event: ?*xnu.kpep_event = null;
                 cfg_err_code = @enumFromInt(xnu.kpep_db_event(db_opt, @ptrCast(name), &event));
                 if (cfg_err_code == .None) {
