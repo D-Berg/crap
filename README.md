@@ -41,7 +41,7 @@ Options:
 
 ## Building from source and installation
 
-Tested with [Zig](https://ziglang.org/) `0.15.2`.
+Tested with [Zig](https://ziglang.org/) `0.16.0`.
 
 ```
 # set install path to ~/.local to install in ~/.local/bin

@@ -17,7 +17,7 @@ pub fn Trace(comptime E: type) type {
         /// Whether counter sampling is in progress.
         var IS_SAMPLING: bool = false;
 
-        sample_thread: std.Thread,
+        sample_thread: std.Io.Future(void),
         opts: Options,
 
         /// Process-tracing error set.
@@ -40,7 +40,7 @@ pub fn Trace(comptime E: type) type {
         };
 
         /// Start sampling counters.
-        pub fn startSampling(allocator: std.mem.Allocator, counters: *std.EnumArray(E, u64), opts: Options) Error!Self {
+        pub fn startSampling(io: std.Io, allocator: std.mem.Allocator, counters: *std.EnumArray(E, u64), opts: Options) Error!Self {
             // Indicate sampling is in progress
             IS_SAMPLING = true;
 
@@ -115,7 +115,8 @@ pub fn Trace(comptime E: type) type {
 
             return .{
                 // Spawn counter sampling thread
-                .sample_thread = try .spawn(.{}, sample, .{
+                .sample_thread = try io.concurrent(sample, .{
+                    io,
                     allocator,
                     counters,
                     counter_map,
@@ -127,12 +128,12 @@ pub fn Trace(comptime E: type) type {
         }
 
         /// Stop sampling counters.
-        pub fn stopSampling(self: *Self) xnu.Error!void {
+        pub fn stopSampling(self: *Self, io: std.Io) xnu.Error!void {
             // Signal counter sampling thread to stop sampling
             @atomicStore(bool, &IS_SAMPLING, false, .monotonic);
 
             // Join counter sampling thread
-            self.sample_thread.join();
+            self.sample_thread.await(io);
 
             // Disable process tracing
             if (xnu.kdebug_trace_enable(0) != 0) {
@@ -150,6 +151,7 @@ pub fn Trace(comptime E: type) type {
         }
 
         fn sample(
+            io: std.Io,
             allocator: std.mem.Allocator,
             counters: *std.EnumArray(E, u64),
             counter_map: [xnu.KPC_MAX_COUNTERS]usize,
@@ -161,7 +163,7 @@ pub fn Trace(comptime E: type) type {
             defer if (opts.is_gpa) allocator.free(bufs);
             while (true) {
                 // Wait for more buffers
-                std.Thread.sleep(2 * opts.sample_period);
+                io.sleep(.{ .nanoseconds = 2 * opts.sample_period }, .real) catch |err| @panic(@errorName(err));
 
                 // Expand buffers for next read
                 if (bufs.len - bufs_cur_idx < opts.num_bufs) {
@@ -350,13 +352,17 @@ fn start(comptime E: type, counter_count_opt: ?*u32) xnu.Error![xnu.KPC_MAX_COUN
     var events: [counter_aliases.len]*xnu.kpep_event = undefined;
     inline for (counter_aliases, 0..) |counter_alias, i| {
         events[i] = blk: {
-            for (std.enums.nameCast(xnu.KpepEventAlias, counter_alias).getNames()) |name| {
+            inline for (std.meta.fields(xnu.KpepEventAlias)) |field| {
+                comptime if (!std.mem.eql(u8, field.name, @tagName(counter_alias))) continue;
+
                 var event: ?*xnu.kpep_event = null;
-                cfg_err_code = @enumFromInt(xnu.kpep_db_event(db_opt, @ptrCast(name), &event));
+                cfg_err_code = @enumFromInt(xnu.kpep_db_event(db_opt, @ptrCast(field.name), &event));
+
                 if (cfg_err_code == .None) {
                     break :blk event.?;
                 }
             }
+
             return xnu.Error.EventNotFound;
         };
     }
