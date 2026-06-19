@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const windows = @import("windows.zig");
 const Io = std.Io;
 
 const Spinner = struct {
@@ -42,8 +43,8 @@ pub fn getScreenWidth(stdout: std.posix.fd_t) usize {
         .macos => _ = std.c.ioctl(stdout, TIOCGWINSZ, &winsize),
         .windows => {
             // https://stackoverflow.com/questions/6812224/getting-terminal-size-in-c-for-windows
-            var info: std.os.windows.CONSOLE_SCREEN_BUFFER_INFO = undefined;
-            if (std.os.windows.kernel32.GetConsoleScreenBufferInfo(stdout, &info) != std.os.windows.TRUE) {
+            var info: windows.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+            if (windows.GetConsoleScreenBufferInfo(stdout, &info) != windows.TRUE) {
                 return 80;
             }
             return @intCast(info.dwSize.X);

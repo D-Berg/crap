@@ -7,6 +7,7 @@ const PERF = std.os.linux.PERF;
 const fd_t = std.posix.fd_t;
 const pid_t = std.os.pid_t;
 const assert = std.debug.assert;
+const windows = @import("windows.zig");
 const log = std.log;
 const progress = @import("progress.zig");
 const MAX_SAMPLES = 10_000;
@@ -200,11 +201,11 @@ pub fn main(init: process.Init) !void {
     // Set codepage to UTF-8 to ensure that everything renders correctly on Windows
     var console_cp: c_uint = undefined;
     if (builtin.os.tag == .windows) {
-        console_cp = std.os.windows.kernel32.GetConsoleOutputCP();
-        _ = std.os.windows.kernel32.SetConsoleOutputCP(65001);
+        console_cp = windows.GetConsoleOutputCP();
+        _ = windows.SetConsoleOutputCP(65001);
     }
     defer if (builtin.os.tag == .windows) {
-        _ = std.os.windows.kernel32.SetConsoleOutputCP(console_cp);
+        _ = windows.SetConsoleOutputCP(console_cp);
     };
 
     if (shell) |sh| {
