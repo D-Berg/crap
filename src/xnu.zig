@@ -38,7 +38,11 @@ pub const Error = error{
     UnsetKpcThreadCounting,
     UnsetKpcAllCounters,
     CollectThreadPmcData,
-} || KpepConfigError;
+    SystemResources,
+    LockedMemoryLimitExceeded,
+    ThreadQuotaExceeded,
+    Unexpected,
+} || KpepConfigError || std.Io.ConcurrentError;
 
 /// KPEP event alias.
 pub const KpepEventAlias = enum {
