@@ -9,6 +9,26 @@ const log = std.log.scoped(.scoop);
 /// Counter alias enum.
 pub const CounterAlias = xnu.KpepEventAlias;
 
+/// Accumulate one traced thread's per-counter deltas into `acc`, saturating at
+/// zero. Per-thread PMC snapshots are normally monotonic, but on Apple Silicon's
+/// asymmetric cores a thread's accumulated counter can read lower on a later
+/// sample (P/E-core counter virtualization); saturating makes such a thread
+/// contribute 0 instead of underflowing the u64 subtraction, which panics in
+/// Debug and wraps to a garbage value in ReleaseFast.
+fn addSaturatingDiffs(acc: []u64, before: []const u64, after: []const u64) void {
+    for (acc, before, after) |*diff, prev, curr| {
+        diff.* += curr -| prev;
+    }
+}
+
+test addSaturatingDiffs {
+    var acc = [_]u64{ 10, 0, 5 };
+    // First counter increases normally, second is unchanged, third reads *lower*
+    // on the later sample and must saturate to 0 rather than underflow.
+    addSaturatingDiffs(&acc, &[_]u64{ 100, 50, 30 }, &[_]u64{ 150, 50, 20 });
+    try std.testing.expectEqualSlices(u64, &[_]u64{ 60, 0, 5 }, &acc);
+}
+
 /// Process trace for observing changes in sampled counter values.
 pub fn Trace(comptime E: type) type {
     return struct {
@@ -282,9 +302,11 @@ pub fn Trace(comptime E: type) type {
             for (thread_data[0..thread_count]) |t_data| {
                 if (t_data.timestamp_0 == 0 or t_data.timestamp_1 == 0) continue;
 
-                for (0..counter_count) |counter_idx| {
-                    counter_diffs[counter_idx] += t_data.counters_1[counter_idx] - t_data.counters_0[counter_idx];
-                }
+                addSaturatingDiffs(
+                    counter_diffs[0..counter_count],
+                    t_data.counters_0[0..counter_count],
+                    t_data.counters_1[0..counter_count],
+                );
             }
 
             // Fill counter value changes for traced process
@@ -355,11 +377,18 @@ fn start(comptime E: type, counter_count_opt: ?*u32) xnu.Error![xnu.KPC_MAX_COUN
             inline for (std.meta.fields(xnu.KpepEventAlias)) |field| {
                 comptime if (!std.mem.eql(u8, field.name, @tagName(counter_alias))) continue;
 
-                var event: ?*xnu.kpep_event = null;
-                cfg_err_code = @enumFromInt(xnu.kpep_db_event(db_opt, @ptrCast(field.name), &event));
+                // Look the counter up by its real KPEP event name(s), e.g.
+                // "FIXED_CYCLES" — the enum tag ("Cycles"/"Instructions") is not
+                // a PMC event name and does not resolve on newer kpep databases
+                // (M2 and later), which previously failed with EventNotFound.
+                const alias = @field(xnu.KpepEventAlias, field.name);
+                for (alias.getNames()) |event_name| {
+                    var event: ?*xnu.kpep_event = null;
+                    cfg_err_code = @enumFromInt(xnu.kpep_db_event(db_opt, @ptrCast(event_name.ptr), &event));
 
-                if (cfg_err_code == .None) {
-                    break :blk event.?;
+                    if (cfg_err_code == .None) {
+                        break :blk event.?;
+                    }
                 }
             }
 

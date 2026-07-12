@@ -104,6 +104,17 @@ pub const KpepEventAlias = enum {
     }
 };
 
+test "KpepEventAlias.getNames yields real PMC event names" {
+    // The kpep database must be queried by these event names, not by the enum
+    // tag ("Cycles"/"Instructions"), which is not a PMC event name and fails to
+    // resolve (EventNotFound) on newer kpep databases.
+    try std.testing.expectEqualStrings("FIXED_CYCLES", KpepEventAlias.Cycles.getNames()[0]);
+    try std.testing.expectEqualStrings("FIXED_INSTRUCTIONS", KpepEventAlias.Instructions.getNames()[0]);
+    for (std.enums.values(KpepEventAlias)) |alias| {
+        try std.testing.expect(alias.getNames().len > 0);
+    }
+}
+
 // -----------------------------------------------------------------------------
 // <kperf.framework> header (reverse-engineered)
 // This framework wraps some sysctl calls to communicate with the KPC in kernel.

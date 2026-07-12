@@ -20,6 +20,20 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+    // Unit tests. The kperf sampling code is macOS-only (pruned elsewhere), so
+    // its tests run on the macOS target; other targets simply have none.
+    const unit_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    configureCrapModule(b, unit_tests.root_module, target, optimize, build_options);
+    const run_unit_tests = b.addRunArtifact(unit_tests);
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_unit_tests.step);
+
     const release = b.step("release", "make an upstream binary release");
     const release_archives = b.step("release-archives", "make an upstream tar release");
     release_archives.dependOn(release);
@@ -97,7 +111,21 @@ fn makeCrapExectutable(
             .strip = strip,
         }),
     });
-    const mod = exe.root_module;
+    configureCrapModule(b, exe.root_module, target, optimize, build_options);
+
+    return exe;
+}
+
+/// Wire up build options and, on macOS, the private kperf/kperfdata frameworks
+/// plus the translated C header the kperf sampling code needs. Shared by the
+/// executable and the unit-test compile so both see the same module setup.
+fn configureCrapModule(
+    b: *std.Build,
+    mod: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    build_options: *std.Build.Step.Options,
+) void {
     mod.addOptions("build_options", build_options);
     switch (target.result.os.tag) {
         .linux, .windows => {},
@@ -127,8 +155,6 @@ fn makeCrapExectutable(
         },
         else => |os| std.debug.panic("Unsupported OS: {t}", .{os}),
     }
-
-    return exe;
 }
 
 // https://codeberg.org/ziglang/zig/src/branch/master/build.zig

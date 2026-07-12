@@ -25,6 +25,16 @@ const KperfTrace = if (builtin.os.tag == .macos)
 else
     void;
 
+test {
+    // `main` is not analyzed in a test build, so the macOS kperf/xnu files are
+    // never imported and their tests go undiscovered. Reference them here so
+    // `zig build test` collects them (only on macOS, where they compile).
+    if (comptime builtin.os.tag == .macos) {
+        _ = @import("kperf.zig");
+        _ = @import("xnu.zig");
+    }
+}
+
 const extra_usage = if (builtin.os.tag == .macos)
     \\
     \\Run as sudo to get extra performance metrics using kperf.
