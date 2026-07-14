@@ -1,13 +1,14 @@
 //! https://codeberg.org/tensorush/scoop/src/branch/main/src/kperf.zig
 const std = @import("std");
+
 const c = @import("c");
+
 const xnu = @import("xnu.zig");
+/// Counter alias enum.
+pub const CounterAlias = xnu.KpepEventAlias;
 
 // Log non-fatal errors
 const log = std.log.scoped(.scoop);
-
-/// Counter alias enum.
-pub const CounterAlias = xnu.KpepEventAlias;
 
 /// Process trace for observing changes in sampled counter values.
 pub fn Trace(comptime E: type) type {
