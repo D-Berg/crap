@@ -1,13 +1,14 @@
 //! https://codeberg.org/tensorush/scoop/src/branch/main/src/kperf.zig
 const std = @import("std");
+
 const c = @import("c");
+
 const xnu = @import("xnu.zig");
+/// Counter alias enum.
+pub const CounterAlias = xnu.KpepEventAlias;
 
 // Log non-fatal errors
 const log = std.log.scoped(.scoop);
-
-/// Counter alias enum.
-pub const CounterAlias = xnu.KpepEventAlias;
 
 /// Process trace for observing changes in sampled counter values.
 pub fn Trace(comptime E: type) type {
@@ -352,11 +353,9 @@ fn start(comptime E: type, counter_count_opt: ?*u32) xnu.Error![xnu.KPC_MAX_COUN
     var events: [counter_aliases.len]*xnu.kpep_event = undefined;
     inline for (counter_aliases, 0..) |counter_alias, i| {
         events[i] = blk: {
-            inline for (std.meta.fields(xnu.KpepEventAlias)) |field| {
-                comptime if (!std.mem.eql(u8, field.name, @tagName(counter_alias))) continue;
-
+            for (@field(xnu.KpepEventAlias, @tagName(counter_alias)).getNames()) |name| {
                 var event: ?*xnu.kpep_event = null;
-                cfg_err_code = @enumFromInt(xnu.kpep_db_event(db_opt, @ptrCast(field.name), &event));
+                cfg_err_code = @enumFromInt(xnu.kpep_db_event(db_opt, @ptrCast(name), &event));
 
                 if (cfg_err_code == .None) {
                     break :blk event.?;
